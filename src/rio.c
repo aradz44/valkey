@@ -105,6 +105,127 @@ void rioInitWithBuffer(rio *r, sds s) {
     r->io.buffer.pos = 0;
 }
 
+/* ------------------------- Ring Buffer I/O implementation ----------------------- */
+
+size_t rioRingBuffer_isFull(const rio *bq) {
+    size_t current_head = atomic_load_explicit(&bq->io.ring_buffer_rio.head, memory_order_relaxed);
+    /* We don't use memory_order_acquire for the tail due to performance reasons,
+     * In the worst case we will just assume wrongly the buffer is full and the main thread will do the job by itself. */
+    size_t current_tail = atomic_load_explicit(&bq->io.ring_buffer_rio.tail, memory_order_relaxed);
+    size_t next_head = (current_head + 1) % bq->io.ring_buffer_rio.size;
+    return next_head == current_tail;
+}
+
+off_t rioRingBuffer_availableBytesForRead(rio *bq) {
+    /* We use memory_order_acquire to make sure the head and the job's fields are visible to the consumer (IO thread). */
+    size_t current_head = atomic_load_explicit(&bq->io.ring_buffer_rio.head, memory_order_acquire);
+    size_t current_tail = atomic_load_explicit(&bq->io.ring_buffer_rio.tail, memory_order_relaxed);
+
+    if (current_head >= current_tail) {
+        return current_head - current_tail;
+    } else {
+        return bq->io.ring_buffer_rio.size - (current_tail - current_head);
+    }
+}
+
+size_t rioRingBuffer_readBytes(rio *bq, void *buf, size_t len) {
+    // This needs to be verified by the caller
+    while(rioRingBuffer_availableBytesForRead(bq) < (off_t)len) {
+        sleep(0.1);
+    }
+    size_t current_tail = atomic_load_explicit(&bq->io.ring_buffer_rio.tail, memory_order_relaxed);
+    if (current_tail + len >= bq->io.ring_buffer_rio.size){
+        size_t until_the_end = bq->io.ring_buffer_rio.size - current_tail;
+        memcpy(buf, bq->io.ring_buffer_rio.ring_buffer + current_tail, until_the_end);
+        memcpy((char*)buf + until_the_end, bq->io.ring_buffer_rio.ring_buffer, len - until_the_end);
+    } else {
+        memcpy(buf, bq->io.ring_buffer_rio.ring_buffer + current_tail, len);
+    }
+
+    atomic_store_explicit(&bq->io.ring_buffer_rio.tail, (current_tail + len) % bq->io.ring_buffer_rio.size, memory_order_relaxed);
+    return len;
+}
+
+
+size_t rioRingBuffer_availableBytesForWrite(const rio *bq) {
+    /* We use memory_order_acquire to make sure the head and the job's fields are visible to the consumer (IO thread). */
+    size_t current_head = atomic_load_explicit(&bq->io.ring_buffer_rio.head, memory_order_relaxed);
+    size_t current_tail = atomic_load_explicit(&bq->io.ring_buffer_rio.tail, memory_order_relaxed);
+
+    if (current_head >= current_tail) {
+        return (bq->io.ring_buffer_rio.size - (current_head - current_tail)) - 1;
+    } else {
+        return current_tail - current_head - 1;
+    }
+}
+
+
+size_t rioRingBuffer_writeBytes(rio *bq, const void *buf, size_t len) {
+    /* Assert the queue is not full - should not happen as the caller should check for it before. */
+    serverAssert(rioRingBuffer_availableBytesForWrite(bq) >= len );
+    /* No need to use atomic acquire for the head, as the main thread is the only one that writes to the head index. */
+    size_t current_head = atomic_load_explicit(&bq->io.ring_buffer_rio.head, memory_order_relaxed);
+    size_t next_head = (current_head + len) % bq->io.ring_buffer_rio.size;
+
+    /* We store directly the job's fields to avoid allocating a new iojob structure. */
+    if (current_head + len > bq->io.ring_buffer_rio.size){
+        size_t until_the_end = bq->io.ring_buffer_rio.size - current_head;
+        memcpy(bq->io.ring_buffer_rio.ring_buffer + current_head, buf , until_the_end);
+        memcpy(bq->io.ring_buffer_rio.ring_buffer, (char*)buf + until_the_end ,len - until_the_end);
+    } else  {
+        memcpy(bq->io.ring_buffer_rio.ring_buffer + current_head, buf ,len);
+    }
+
+    if(bq->io.ring_buffer_rio.update_cksum_on_write) {
+        int reached_eof = (bq->io.ring_buffer_rio.lastbytes && len >= 48 && !memcmp(bq->io.ring_buffer_rio.lastbytes, (char*)buf + (len - 40), 40));
+        if (reached_eof){
+            bq->io.ring_buffer_rio.update_cksum_on_write(bq, buf, len - 48);
+        } else {
+            bq->io.ring_buffer_rio.update_cksum_on_write(bq, buf, len);
+        }
+    }
+
+    /* memory_order_release to make sure the data is visible to the consumer (the IO thread). */
+    atomic_store_explicit(&bq->io.ring_buffer_rio.head, next_head, memory_order_relaxed);
+    return len;
+}
+
+/* Flushes any buffer to target device if applicable. Returns 1 on success
+ * and 0 on failures. */
+int rioRingBuffer_flush(rio *r) {
+    UNUSED(r);
+    return 1; /* Nothing to do, our write just appends to the buffer. */
+}
+
+static const rio rioRingBufferIO = {
+    rioRingBuffer_readBytes,
+    rioRingBuffer_writeBytes,
+    rioRingBuffer_availableBytesForRead,
+    rioRingBuffer_flush,
+    NULL,       /* update_checksum */
+    0,          /* current checksum */
+    0,          /* flags */
+    0,          /* bytes read or written */
+    0,          /* read/write chunk size */
+    {{NULL, 0}} /* union for io-specific vars */
+};
+
+void rioInitWithRingBuffer(rio *r, size_t buf_len) {
+    *r = rioRingBufferIO;
+    r->io.ring_buffer_rio.ring_buffer = zcalloc(buf_len);
+    r->io.ring_buffer_rio.size = buf_len; /* Total number of items */
+    r->io.ring_buffer_rio.head = 0;
+    r->io.ring_buffer_rio.tail = 0;
+    r->io.ring_buffer_rio.update_cksum_on_write = rioGenericUpdateChecksum;
+    r->io.ring_buffer_rio.lastbytes = NULL;
+}
+
+/* Clean up the job queue and free allocated memory. */
+void rioRingBuffer_free(rio *bq) {
+    zfree(bq->io.ring_buffer_rio.ring_buffer);
+    memset(bq, 0, sizeof(*bq));
+}
+
 /* --------------------- Stdio file pointer implementation ------------------- */
 
 /* Returns 1 or 0 for success/failure. */

@@ -1454,6 +1454,8 @@ int rdbSaveRio(int req, rio *rdb, int *error, int rdbflags, rdbSaveInfo *rsi) {
      * loading code skips the check in this case. */
     cksum = rdb->cksum;
     memrev64ifbe(&cksum);
+    serverLog(LL_WARNING, "aradzz 444: chksum: %lu , chksum hex: %lx", cksum, cksum);
+    serverLog(LL_WARNING, "aradzz 445: chksum: %lu , chksum hex: %lx", cksum&0xFFFFFFFFFFFFFFFFUL, cksum&0xFFFFFFFFFFFFFFFFUL);
     if (rioWrite(rdb, &cksum, 8) == 0) goto werr;
     return C_OK;
 
@@ -2941,7 +2943,7 @@ void stopSaving(int success) {
 /* Track loading progress in order to serve client's from time to time
    and if needed calculate rdb checksum  */
 void rdbLoadProgressCallback(rio *r, const void *buf, size_t len) {
-    if (server.rdb_checksum) rioGenericUpdateChecksum(r, buf, len);
+    if (server.rdb_checksum && !server.replica_load_rdb_in_bio_thread) rioGenericUpdateChecksum(r, buf, len);
     if (server.loading_process_events_interval_bytes &&
         (r->processed_bytes + len) / server.loading_process_events_interval_bytes >
             r->processed_bytes / server.loading_process_events_interval_bytes) {
@@ -3039,7 +3041,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
     long long empty_keys_skipped = 0;
     bool is_valkey_magic;
 
-    rdb->update_cksum = rdbLoadProgressCallback;
+    rdb->update_cksum = NULL;
     rdb->max_processing_chunk = server.loading_process_events_interval_bytes;
     if (rioRead(rdb, buf, 9) == 0) goto eoferr;
     buf[9] = '\0';
@@ -3068,8 +3070,10 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
         robj *val;
 
         /* Read type. */
-        if ((type = rdbLoadType(rdb)) == -1) goto eoferr;
 
+        if ((type = rdbLoadType(rdb)) == -1) goto eoferr;
+        int aradz = 0;
+        UNUSED(aradz);
         /* Handle special types. */
         if (type == RDB_OPCODE_EXPIRETIME) {
             /* EXPIRETIME: load an expire associated with the next key
@@ -3403,6 +3407,9 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
                           (unsigned long long)expected, (unsigned long long)cksum);
                 rdbReportCorruptRDB("RDB CRC error");
                 return C_ERR;
+            }
+            else {
+                serverLog(LL_WARNING, "aradzz 0000 we rock");
             }
         }
     }

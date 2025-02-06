@@ -2325,8 +2325,9 @@ void readSyncBulkPayload(connection *conn) {
 
     rdbSaveInfo rsi = RDB_SAVE_INFO_INIT;
     if (use_diskless_load) {
-        rio rdb;
-        serverDb **dbarray;
+        // rio rdb_conn;
+        rio rdb_buffer;
+        serverDb *dbarray;
         functionsLibCtx *functions_lib_ctx;
         int asyncLoading = 0;
 
@@ -2354,34 +2355,47 @@ void readSyncBulkPayload(connection *conn) {
             functions_lib_ctx = functionsLibCtxGetCurrent();
         }
 
-        rioInitWithConn(&rdb, conn, server.repl_transfer_size);
 
         /* Put the socket in blocking mode to simplify RDB transfer.
-         * We'll restore it when the RDB is received. */
+        * We'll restore it when the RDB is received. */
         connBlock(conn);
         connRecvTimeout(conn, server.repl_timeout * 1000);
+
+        if (server.replica_load_rdb_in_bio_thread) {
+            serverLog(LL_WARNING,"aradzz 100 with bio");
+            rioInitWithRingBuffer(&rdb_buffer, server.replica_bio_load_ring_buffer_size);
+            rdb_buffer.io.ring_buffer_rio.lastbytes = &eofmark[0];
+            atomic_store_explicit(&server.replica_bio_load_state, 1, memory_order_relaxed);
+            bioCreateReadRDBJob(conn, &rdb_buffer);
+        } else {
+            serverLog(LL_WARNING,"aradzz 101 without bio");
+            rioInitWithConn(&rdb_buffer, conn, server.repl_transfer_size);
+        }
 
         serverLog(LL_NOTICE, "PRIMARY <-> REPLICA sync: Loading DB in memory");
         startLoading(server.repl_transfer_size, RDBFLAGS_REPLICATION, asyncLoading);
         if (replicationSupportSkipRDBChecksum(conn, use_diskless_load, usemark)) rdb.flags |= RIO_FLAG_SKIP_RDB_CHECKSUM;
         int loadingFailed = 0;
         rdbLoadingCtx loadingCtx = {.dbarray = dbarray, .functions_lib_ctx = functions_lib_ctx};
-        if (rdbLoadRioWithLoadingCtxScopedRdb(&rdb, RDBFLAGS_REPLICATION, &rsi, &loadingCtx) != C_OK) {
+        if (rdbLoadRioWithLoadingCtxScopedRdb(&rdb_buffer, RDBFLAGS_REPLICATION, &rsi, &loadingCtx) != C_OK) {
             /* RDB loading failed. */
             serverLog(LL_WARNING, "Failed trying to load the PRIMARY synchronization DB "
                                   "from socket, check server logs.");
             loadingFailed = 1;
         } else if (usemark) {
             /* Verify the end mark is correct. */
-            if (!rioRead(&rdb, buf, RDB_EOF_MARK_SIZE) || memcmp(buf, eofmark, RDB_EOF_MARK_SIZE) != 0) {
+            if (!rioRead(&rdb_buffer, buf, RDB_EOF_MARK_SIZE) || memcmp(buf, eofmark, RDB_EOF_MARK_SIZE) != 0) {
                 serverLog(LL_WARNING, "Replication stream EOF marker is broken");
                 loadingFailed = 1;
             }
         }
 
+        rioRingBuffer_free(&rdb_buffer);
+        atomic_store_explicit(&server.replica_bio_load_state, 0, memory_order_relaxed);
+
         if (loadingFailed) {
             stopLoading(0);
-            rioFreeConn(&rdb, NULL);
+            // rioFreeConn(&rdb_conn, NULL);
 
             if (server.repl_diskless_load == REPL_DISKLESS_LOAD_SWAPDB) {
                 /* Discard potentially partially loaded tempDb. */
@@ -2431,7 +2445,7 @@ void readSyncBulkPayload(connection *conn) {
 
         /* Cleanup and restore the socket to the original state to continue
          * with the normal replication. */
-        rioFreeConn(&rdb, NULL);
+        // rioFreeConn(&rdb_conn, NULL);
         connNonBlock(conn);
         connRecvTimeout(conn, 0);
     } else {

@@ -8,6 +8,7 @@ typedef struct unitTest {
 
 int test_popcount(int argc, char **argv, int flags);
 int test_crc64(int argc, char **argv, int flags);
+int test_aradz(int argc, char **argv, int flags);
 int test_crc64combine(int argc, char **argv, int flags);
 int test_dictCreate(int argc, char **argv, int flags);
 int test_dictAdd16Keys(int argc, char **argv, int flags);

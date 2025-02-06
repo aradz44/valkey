@@ -1969,6 +1969,14 @@ struct valkeyServer {
                                                 * delay (start sooner if they all connect). */
     int dual_channel_replication;              /* Config used to determine if the replica should
                                                 * use dual channel replication for full syncs. */
+    int replica_load_rdb_in_bio_thread;        /* Config used to determine if the replica should
+                                                * use a background thread when saving to disk. */
+    int replica_bio_load_state;
+    size_t replica_bio_load_ring_buffer_size;
+
+    size_t replica_bio_load_write_chunk;
+
+
     int wait_before_rdb_client_free;           /* Grace period in seconds for replica main channel
                                                 * to establish psync. */
     int debug_pause_after_fork;                /* Debug param that pauses the main process

@@ -3165,6 +3165,7 @@ standardConfig static_configs[] = {
     createBoolConfig("repl-mptcp", NULL, IMMUTABLE_CONFIG, server.repl_mptcp, 0, isValidMptcp, NULL),
     createBoolConfig("repl-diskless-sync", NULL, DEBUG_CONFIG | MODIFIABLE_CONFIG, server.repl_diskless_sync, 1, NULL, NULL),
     createBoolConfig("dual-channel-replication-enabled", NULL, DEBUG_CONFIG | MODIFIABLE_CONFIG, server.dual_channel_replication, 0, NULL, NULL),
+    createBoolConfig("replica-load-in-bio-thread", NULL, DEBUG_CONFIG | MODIFIABLE_CONFIG, server.replica_load_rdb_in_bio_thread, 0, NULL, NULL),
     createBoolConfig("aof-rewrite-incremental-fsync", NULL, MODIFIABLE_CONFIG, server.aof_rewrite_incremental_fsync, 1, NULL, NULL),
     createBoolConfig("no-appendfsync-on-rewrite", NULL, MODIFIABLE_CONFIG, server.aof_no_fsync_on_rewrite, 0, NULL, NULL),
     createBoolConfig("cluster-require-full-coverage", NULL, MODIFIABLE_CONFIG, server.cluster_require_full_coverage, 1, NULL, NULL),
@@ -3324,6 +3325,8 @@ standardConfig static_configs[] = {
     createULongConfig("commandlog-large-reply-max-len", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.commandlog[COMMANDLOG_TYPE_LARGE_REPLY].max_len, 128, INTEGER_CONFIG, NULL, NULL),
     createULongConfig("acllog-max-len", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.acllog_max_len, 128, INTEGER_CONFIG, NULL, NULL),
     createULongConfig("cluster-blacklist-ttl", NULL, MODIFIABLE_CONFIG, 0, ULONG_MAX, server.cluster_blacklist_ttl, 60, INTEGER_CONFIG, NULL, NULL),
+    createULongConfig("replica_bio_load_write_chunk", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.replica_bio_load_write_chunk, 512, INTEGER_CONFIG, NULL, NULL),
+    createULongConfig("replica_bio_load_ring_buffer_size", NULL, MODIFIABLE_CONFIG, 0, LONG_MAX, server.replica_bio_load_ring_buffer_size, 4*1024*1024, INTEGER_CONFIG, NULL, NULL),
 
     /* Long Long configs */
     createLongLongConfig("busy-reply-threshold", "lua-time-limit", MODIFIABLE_CONFIG, 0, LONG_MAX, server.busy_reply_threshold, 5000, INTEGER_CONFIG, NULL, NULL), /* milliseconds */

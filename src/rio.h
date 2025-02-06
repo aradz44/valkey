@@ -37,6 +37,16 @@
 #include "sds.h"
 #include "connection.h"
 
+#include <sys/syscall.h>
+
+#ifndef CACHE_LINE_SIZE
+#if defined(__aarch64__) && defined(__APPLE__)
+#define CACHE_LINE_SIZE 128
+#else
+#define CACHE_LINE_SIZE 64
+#endif
+#endif
+
 #define RIO_FLAG_READ_ERROR (1 << 0)
 #define RIO_FLAG_WRITE_ERROR (1 << 1)
 #define RIO_FLAG_CLOSE_ASAP (1 << 2) /* Rio was closed asynchronously during the current rio operation. */
@@ -93,6 +103,15 @@ struct _rio {
             size_t read_limit;  /* don't allow to buffer/read more than that */
             size_t read_so_far; /* amount of data read from the rio (not buffered) */
         } conn;
+        /* In-memory ring buffer target. */
+        struct {
+            char* ring_buffer;
+            size_t size;
+            void (*update_cksum_on_write)(struct _rio *, const void *buf, size_t len);
+            char* lastbytes;
+            _Atomic size_t head __attribute__((aligned(CACHE_LINE_SIZE))); /* Next write index for producer (main-thread) */
+            _Atomic size_t tail __attribute__((aligned(CACHE_LINE_SIZE))); /* Next read index for consumer  (IO-thread) */
+        } ring_buffer_rio;
         /* FD target (used to write to pipe). */
         struct {
             int fd; /* File descriptor. */
@@ -205,4 +224,15 @@ void rioSetReclaimCache(rio *r, int enabled);
 uint8_t rioCheckType(rio *r);
 void rioInitWithConnset(rio *r, connection **conns, int numconns);
 void rioFreeConnset(rio *r);
+
+
+
+void rioInitWithRingBuffer(rio *r, size_t buf_len);
+off_t rioRingBuffer_availableBytesForRead(rio *bq);
+size_t rioRingBuffer_readBytes(rio *bq, void *buf, size_t len);
+size_t rioRingBuffer_availableBytesForWrite(const rio *bq);
+size_t rioRingBuffer_writeBytes(rio *bq, const void *buf, size_t len);
+int rioRingBuffer_flush(rio *r);
+void rioRingBuffer_free(rio *bq);
+
 #endif

@@ -68,6 +68,7 @@ static char *bio_worker_title[] = {
     "bio_close_file",
     "bio_aof",
     "bio_lazy_free",
+    "bio_rdb_read"
 };
 
 #define BIO_WORKER_NUM (sizeof(bio_worker_title) / sizeof(*bio_worker_title))
@@ -77,6 +78,7 @@ static unsigned int bio_job_to_worker[] = {
     [BIO_AOF_FSYNC] = 1,
     [BIO_CLOSE_AOF] = 1,
     [BIO_LAZY_FREE] = 2,
+    [BIO_RDB_READ] = 3,
 };
 
 static pthread_t bio_threads[BIO_WORKER_NUM];
@@ -108,6 +110,13 @@ typedef union bio_job {
         lazy_free_fn *free_fn; /* Function that will free the provided arguments */
         void *free_args[];     /* List of arguments to be passed to the free function */
     } free_args;
+
+
+    struct {
+        int type; 
+        connection* rdb_conn;           /* Replica's primary conn to read from */
+        rio* rdb_buffer;
+    } rdb_read_args;
 } bio_job;
 
 void *bioProcessBackgroundJobs(void *arg);
@@ -203,10 +212,19 @@ void bioCreateFsyncJob(int fd, long long offset, int need_reclaim_cache) {
     bioSubmitJob(BIO_AOF_FSYNC, job);
 }
 
+void bioCreateReadRDBJob(connection* rdb_conn, rio* rdb_buffer) {
+    bio_job *job = zmalloc(sizeof(*job));
+    job->rdb_read_args.rdb_conn = rdb_conn;
+    job->rdb_read_args.rdb_buffer = rdb_buffer;
+    bioSubmitJob(BIO_RDB_READ, job);
+}
+
 void *bioProcessBackgroundJobs(void *arg) {
     bio_job *job;
     unsigned long worker = (unsigned long)arg;
     sigset_t sigset;
+    rio* rdb;
+    UNUSED(rdb);
 
     /* Check that the worker is within the right interval. */
     serverAssert(worker < BIO_WORKER_NUM);
@@ -278,6 +296,30 @@ void *bioProcessBackgroundJobs(void *arg) {
             if (job_type == BIO_CLOSE_AOF) close(job->fd_args.fd);
         } else if (job_type == BIO_LAZY_FREE) {
             job->free_args.free_fn(job->free_args.free_args);
+        } else if (job_type == BIO_RDB_READ) {
+            serverLog(LL_WARNING, "aradz Replica Bio thread starting to read RDB");
+            connection *conn = job->rdb_read_args.rdb_conn;
+            rio *ring_buffer = job->rdb_read_args.rdb_buffer;
+            size_t chank_len = server.replica_bio_load_write_chunk;
+            char tmp_buf[chank_len];
+            while (1)
+            {
+                int ret ;
+                if( atomic_load_explicit(&server.replica_bio_load_state, memory_order_relaxed) && (ret = connRead(conn, tmp_buf, chank_len)) > 0){
+                    size_t avail_bytes_to_write;
+                    while (atomic_load_explicit(&server.replica_bio_load_state, memory_order_relaxed) && (avail_bytes_to_write = rioRingBuffer_availableBytesForWrite(ring_buffer)) < chank_len){
+                        sleep(0.001);
+                    }
+                    if(atomic_load_explicit(&server.replica_bio_load_state, memory_order_relaxed)) rioWrite(ring_buffer, tmp_buf, ret);
+                } else if (ret == 0) {
+                    break;
+                } else {
+                    if (connLastErrorRetryable(conn)) continue;
+                    if (errno == EWOULDBLOCK) errno = ETIMEDOUT;
+                }
+
+                if (!atomic_load_explicit(&server.replica_bio_load_state, memory_order_relaxed)) break;
+            }
         } else {
             serverPanic("Wrong job type in bioProcessBackgroundJobs().");
         }
