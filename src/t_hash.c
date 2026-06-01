@@ -340,9 +340,11 @@ int hashTypeUpdateAsStringRef(robj *o, sds field, const char *buf, size_t len) {
     void **entry_ref = hashtableFindRef(ht, field);
     entry *entry = *entry_ref;
     mstime_t expiry = entryGetExpiry(entry);
+    hashtableTrackedDataBytesSub(ht, entry);
     void *new_entry = entryUpdateAsStringRef(entry, buf, len, expiry);
     bool replaced = hashtableReplaceReallocatedEntry(ht, entry, new_entry);
     serverAssert(replaced);
+    hashtableTrackedDataBytesAdd(ht, new_entry);
     hashTypeTrackUpdateEntry(o, entry, new_entry, expiry, expiry);
     return C_OK;
 }
@@ -437,12 +439,14 @@ int hashTypeSet(robj *o, sds field, sds value, mstime_t expiry, int flags, bool 
                 /* In case the HASH_SET_KEEP_EXPIRY will force keeping the existing entry expiry. */
                 expiry = entry_expiry;
             }
+            hashtableTrackedDataBytesSub(ht, existing);
             void *new_entry = entryUpdate(existing, v, expiry);
             if (new_entry != existing) {
                 /* It has been reallocated. */
                 bool replaced = hashtableReplaceReallocatedEntry(ht, existing, new_entry);
                 serverAssert(replaced);
             }
+            hashtableTrackedDataBytesAdd(ht, new_entry);
 
             hashTypeTrackUpdateEntry(o, existing, new_entry, entry_expiry, expiry);
 
@@ -543,7 +547,9 @@ static expiryModificationResult hashTypeSetExpire(robj *o, sds field, mstime_t e
             serverAssert(hashTypeDelete(o, field));
             return EXPIRATION_MODIFICATION_EXPIRE_ASAP;
         }
+        hashtableTrackedDataBytesSub(ht, current_entry);
         *entry_ref = entrySetExpiry(current_entry, expiry);
+        hashtableTrackedDataBytesAdd(ht, *entry_ref);
         hashTypeTrackUpdateEntry(o, current_entry, *entry_ref, current_expire, expiry);
         return EXPIRATION_MODIFICATION_SUCCESSFUL;
     }
@@ -570,7 +576,9 @@ static expiryModificationResult hashTypePersist(robj *o, sds field) {
         mstime_t current_expire = entryGetExpiry(current_entry);
         if (current_expire != EXPIRY_NONE) {
             hashTypeUntrackEntry(o, current_entry);
+            hashtableTrackedDataBytesSub(ht, current_entry);
             *entry_ref = entrySetExpiry(current_entry, EXPIRY_NONE);
+            hashtableTrackedDataBytesAdd(ht, *entry_ref);
             return EXPIRATION_MODIFICATION_SUCCESSFUL;
         }
         return EXPIRATION_MODIFICATION_FAILED; // If the found element has no expiration set, return -1
@@ -621,6 +629,19 @@ unsigned long hashTypeLength(const robj *o) {
     default:
         serverPanic("Unknown hash encoding");
         return ULONG_MAX;
+    }
+}
+
+/* Reports the hash's data bytes (user content + per-entry overhead).
+ * For listpack the entire encoded buffer is counted as data_bytes. */
+uint64_t hashTypeDataBytes(const robj *o) {
+    if (o->encoding == OBJ_ENCODING_HASHTABLE) {
+        hashtable *ht = objectGetVal(o);
+        return hashtableTrackedUserDataBytes(ht) + hashtableTrackedOverheadDataBytes(ht);
+    } else if (o->encoding == OBJ_ENCODING_LISTPACK) {
+        return lpBytes((unsigned char *)objectGetVal(o));
+    } else {
+        serverPanic("Unknown hash encoding");
     }
 }
 

@@ -482,6 +482,21 @@ unsigned long setTypeSize(const robj *subject) {
     }
 }
 
+/* Reports the set's data bytes (user content + per-entry overhead).
+ * For listpack/intset the entire encoded buffer is counted as data_bytes. */
+uint64_t setTypeDataBytes(const robj *o) {
+    if (o->encoding == OBJ_ENCODING_HASHTABLE) {
+        hashtable *ht = objectGetVal(o);
+        return hashtableTrackedUserDataBytes(ht) + hashtableTrackedOverheadDataBytes(ht);
+    } else if (o->encoding == OBJ_ENCODING_LISTPACK) {
+        return lpBytes((unsigned char *)objectGetVal(o));
+    } else if (o->encoding == OBJ_ENCODING_INTSET) {
+        return intsetBlobLen((intset *)objectGetVal(o));
+    } else {
+        serverPanic("Unknown set encoding");
+    }
+}
+
 /* Convert the set to specified encoding. The resulting hashtable (when converting
  * to a hash table) is presized to hold the number of elements in the original
  * set. */

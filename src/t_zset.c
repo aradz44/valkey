@@ -158,6 +158,21 @@ sds zslGetNodeElement(const zskiplistNode *x) {
     return (sds)data;
 }
 
+/* User data bytes of a zset member: score (8) + member content length. */
+size_t zsetEntryGetUserDataBytes(const void *entry) {
+    return sizeof(double) + sdslen(zslGetNodeElement((const zskiplistNode *)entry));
+}
+
+/* Per-zset-node overhead: total node alloc minus user data (score + sdslen).
+ * = zskiplistNode struct (without score) + level array + sds-hdr-size byte +
+ *   SDS header + null terminator. */
+size_t zsetEntryGetOverheadDataBytes(const void *entry) {
+    const zskiplistNode *x = entry;
+    sds ele = zslGetNodeElement(x);
+    return zslGetNodeAllocSize(zslGetNodeHeight(x)) - sizeof(double)
+         + sdsHdrSize(sdsType(ele)) + 2;
+}
+
 /* Helper function to set the height of skiplist. */
 static void zslSetHeight(zskiplist *zsl, int height) {
     zsl->header.level[0].span = height;
@@ -1270,6 +1285,19 @@ unsigned long zsetLength(const robj *zobj) {
         serverPanic("Unknown sorted set encoding");
     }
     return length;
+}
+
+/* Reports the zset's data bytes (user content + per-entry overhead).
+ * For listpack the entire encoded buffer is counted as data_bytes. */
+uint64_t zsetTypeDataBytes(const robj *o) {
+    if (o->encoding == OBJ_ENCODING_SKIPLIST) {
+        hashtable *ht = ((const zset *)objectGetVal(o))->ht;
+        return hashtableTrackedUserDataBytes(ht) + hashtableTrackedOverheadDataBytes(ht);
+    } else if (o->encoding == OBJ_ENCODING_LISTPACK) {
+        return lpBytes((unsigned char *)objectGetVal(o));
+    } else {
+        serverPanic("Unknown sorted set encoding");
+    }
 }
 
 /* Factory method to return a zset.

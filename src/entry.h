@@ -63,6 +63,12 @@ entry *entryUpdate(entry *entry, sds value, mstime_t expiry);
 /* Returns the total memory used by the entry (in bytes). */
 size_t entryMemUsage(entry *entry);
 
+/* User data bytes of an entry: field_len + value_len. */
+size_t entryDataBytes(const entry *entry);
+
+/* Per-entry overhead: total entry alloc minus user content. */
+size_t entryOverheadDataBytes(const entry *entry);
+
 /* Defragments the entry and returns the new pointer (if moved). */
 entry *entryDefrag(entry *entry, void *(*defragfn)(void *), sds (*sdsdefragfn)(sds));
 
