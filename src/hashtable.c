@@ -305,14 +305,16 @@ typedef struct iter iter;
 
 struct hashtable {
     hashtableType *type;
-    ssize_t rehash_idx;        /* -1 = rehashing not in progress. */
-    bucket *tables[2];         /* 0 = main table, 1 = rehashing target.  */
-    size_t used[2];            /* Number of entries in each table. */
-    int8_t bucket_exp[2];      /* Exponent for num buckets (num = 1 << exp). */
-    int16_t pause_rehash;      /* Non-zero = rehashing is paused */
-    int16_t pause_auto_shrink; /* Non-zero = automatic resizing disallowed. */
-    size_t child_buckets[2];   /* Number of allocated child buckets. */
-    iter *safe_iterators;      /* Head of linked list of safe iterators */
+    ssize_t rehash_idx;                 /* -1 = rehashing not in progress. */
+    bucket *tables[2];                  /* 0 = main table, 1 = rehashing target.  */
+    size_t used[2];                     /* Number of entries in each table. */
+    int8_t bucket_exp[2];               /* Exponent for num buckets (num = 1 << exp). */
+    int16_t pause_rehash;               /* Non-zero = rehashing is paused */
+    int16_t pause_auto_shrink;          /* Non-zero = automatic resizing disallowed. */
+    size_t child_buckets[2];            /* Number of allocated child buckets. */
+    iter *safe_iterators;               /* Head of linked list of safe iterators */
+    size_t tracked_user_data_bytes;     /* Sum of entryGetUserDataBytes() for all entries. */
+    size_t tracked_overhead_data_bytes; /* Sum of entryGetOverheadDataBytes() for all entries. */
     void *metadata[];
 };
 
@@ -400,6 +402,24 @@ static bool abortShrinkIfNeeded(hashtable *ht);
 
 static inline void freeEntry(hashtable *ht, void *entry) {
     if (ht->type->entryDestructor) ht->type->entryDestructor(entry);
+}
+
+static inline size_t getEntryUserDataBytes(hashtable *ht, const void *entry) {
+    return ht->type->entryGetUserDataBytes ? ht->type->entryGetUserDataBytes(entry) : 0;
+}
+
+static inline size_t getEntryOverheadDataBytes(hashtable *ht, const void *entry) {
+    return ht->type->entryGetOverheadDataBytes ? ht->type->entryGetOverheadDataBytes(entry) : 0;
+}
+
+void hashtableTrackedDataBytesAdd(hashtable *ht, const void *entry) {
+    ht->tracked_user_data_bytes += getEntryUserDataBytes(ht, entry);
+    ht->tracked_overhead_data_bytes += getEntryOverheadDataBytes(ht, entry);
+}
+
+void hashtableTrackedDataBytesSub(hashtable *ht, const void *entry) {
+    ht->tracked_user_data_bytes -= getEntryUserDataBytes(ht, entry);
+    ht->tracked_overhead_data_bytes -= getEntryOverheadDataBytes(ht, entry);
 }
 
 static inline int compareKeys(hashtable *ht, const void *key1, const void *key2) {
@@ -1100,6 +1120,7 @@ static void insert(hashtable *ht, uint64_t hash, void *entry) {
     b->presence |= (1 << pos_in_bucket);
     b->hashes[pos_in_bucket] = highBits(hash);
     ht->used[table_index]++;
+    hashtableTrackedDataBytesAdd(ht, entry);
 }
 
 /* A 64-bit fingerprint of some of the state of the hash table. */
@@ -1269,6 +1290,8 @@ hashtable *hashtableCreate(hashtableType *type) {
     ht->pause_rehash = 0;
     ht->pause_auto_shrink = 0;
     ht->safe_iterators = NULL;
+    ht->tracked_user_data_bytes = 0;
+    ht->tracked_overhead_data_bytes = 0;
     resetTable(ht, 0);
     resetTable(ht, 1);
     if (type->trackMemUsage) type->trackMemUsage(ht, alloc_size);
@@ -1320,6 +1343,8 @@ void hashtableEmpty(hashtable *ht, void(callback)(hashtable *)) {
         }
         resetTable(ht, table_index);
     }
+    ht->tracked_user_data_bytes = 0;
+    ht->tracked_overhead_data_bytes = 0;
 }
 
 /* Deletes all the entries and frees the table. */
@@ -1383,6 +1408,17 @@ size_t hashtableMemUsage(const hashtable *ht) {
     size_t metasize = ht->type->getMetadataSize ? ht->type->getMetadataSize() : 0;
     return sizeof(hashtable) + metasize + sizeof(bucket) * num_buckets;
 }
+
+/* Sum of all entries' user data bytes, tracked incrementally. */
+size_t hashtableTrackedUserDataBytes(hashtable *ht) {
+    return ht->tracked_user_data_bytes;
+}
+
+/* Sum of all entries' overhead bytes, tracked incrementally. */
+size_t hashtableTrackedOverheadDataBytes(hashtable *ht) {
+    return ht->tracked_overhead_data_bytes;
+}
+
 
 /* Pauses automatic shrinking. This can be called before deleting a lot of
  * entries, to prevent automatic shrinking from being triggered multiple times.
@@ -1719,6 +1755,7 @@ void hashtableInsertAtPosition(hashtable *ht, void *entry, hashtablePosition *po
     b->presence |= (1 << pos_in_bucket);
     b->entries[pos_in_bucket] = entry;
     ht->used[table_index]++;
+    hashtableTrackedDataBytesAdd(ht, entry);
     /* Hash bits are already set by hashtableFindPositionForInsert. */
 }
 
@@ -1732,6 +1769,7 @@ bool hashtablePop(hashtable *ht, const void *key, void **popped) {
     int table_index = 0;
     bucket *b = findBucket(ht, hash, key, &pos_in_bucket, &table_index);
     if (b) {
+        hashtableTrackedDataBytesSub(ht, b->entries[pos_in_bucket]);
         if (popped) *popped = b->entries[pos_in_bucket];
         b->presence &= ~(1 << pos_in_bucket);
         ht->used[table_index]--;
@@ -1859,6 +1897,7 @@ void hashtableTwoPhasePopDelete(hashtable *ht, hashtablePosition *pos) {
 
     /* Delete the entry and resume rehashing. */
     assert(isPositionFilled(b, pos_in_bucket));
+    hashtableTrackedDataBytesSub(ht, b->entries[pos_in_bucket]);
     b->presence &= ~(1 << pos_in_bucket);
     ht->used[table_index]--;
     /* When we resume rehashing, it may cause the bucket to be deleted due to

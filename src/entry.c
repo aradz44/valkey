@@ -511,6 +511,43 @@ size_t entryMemUsage(entry *entry) {
     return mem;
 }
 
+/* User data bytes of an entry: field_len + value_len. */
+size_t entryDataBytes(const entry *e) {
+    size_t vlen;
+    entryGetValue(e, &vlen);
+    return sdslen(entryGetField(e)) + vlen;
+}
+
+/* Per-entry overhead: total entry alloc minus user content. The stringRef's
+ * external buffer is NOT counted — those bytes are user data. */
+size_t entryOverheadDataBytes(const entry *e) {
+    sds field = entryGetField(e);
+    /* Field SDS header + null terminator. */
+    size_t overhead = sdsHdrSize(sdsType(field)) + 1;
+
+    /* Optional expiry time prepended before the field. */
+    if (entryHasExpiry(e)) overhead += sizeof(mstime_t);
+
+    if (entryHasEmbeddedValue(e)) {
+        /* Embedded value SDS: header + null terminator. */
+        size_t vlen;
+        sds val = (sds)entryGetValue(e, &vlen);
+        overhead += sdsHdrSize(sdsType(val)) + 1;
+    } else {
+        /* Separate value: pointer to it lives in the entry allocation. */
+        overhead += sizeof(void *);
+        if (entryHasStringRef(e)) {
+            /* stringRef struct (external buf + len). */
+            overhead += sizeof(stringRef);
+        } else {
+            /* Separately allocated SDS: header + null terminator. */
+            sds val = *(sds *)entryGetSdsValueRef(e);
+            overhead += sdsHdrSize(sdsType(val)) + 1;
+        }
+    }
+    return overhead;
+}
+
 /* Defragments a entry (field-value pair) if needed, using the
  * provided defrag functions. The defrag functions return NULL if the allocation
  * was not moved, otherwise they return a pointer to the new memory location.

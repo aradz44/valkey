@@ -619,11 +619,24 @@ hashtableType objectHashtableType = {
     .entryDestructor = dictObjectDestructor,
 };
 
+/* User data bytes of a set member: its SDS content length. */
+size_t sdsEntryGetUserDataBytes(const void *entry) {
+    return sdslen((const_sds)entry);
+}
+
+/* Overhead bytes of a set member: SDS header + null terminator. */
+size_t sdsEntryGetOverheadDataBytes(const void *entry) {
+    const_sds s = (const_sds)entry;
+    return sdsHdrSize(sdsType(s)) + 1;
+}
+
 /* Set hashtable type. Items are SDS strings */
 hashtableType setHashtableType = {
     .hashFunction = sdsHashConfigurableSeed,
     .keyCompare = dictSdsKeyCompare,
-    .entryDestructor = dictSdsDestructor};
+    .entryDestructor = dictSdsDestructor,
+    .entryGetUserDataBytes = sdsEntryGetUserDataBytes,
+    .entryGetOverheadDataBytes = sdsEntryGetOverheadDataBytes};
 
 const void *zsetHashtableGetKey(const void *element) {
     const zskiplistNode *node = element;
@@ -635,6 +648,8 @@ hashtableType zsetHashtableType = {
     .hashFunction = sdsHashConfigurableSeed,
     .entryGetKey = zsetHashtableGetKey,
     .keyCompare = dictSdsKeyCompare,
+    .entryGetUserDataBytes = zsetEntryGetUserDataBytes,
+    .entryGetOverheadDataBytes = zsetEntryGetOverheadDataBytes,
 };
 
 uint64_t hashtableSdsHash(const void *key) {
@@ -718,6 +733,14 @@ size_t hashHashtableTypeMetadataSize(void) {
     return sizeof(void *);
 }
 
+size_t hashEntryGetDataBytes(const void *entry) {
+    return entryDataBytes(entry);
+}
+
+size_t hashEntryGetOverheadDataBytes(const void *entry) {
+    return entryOverheadDataBytes(entry);
+}
+
 extern bool hashHashtableTypeValidate(hashtable *ht, void *entry);
 
 hashtableType hashHashtableType = {
@@ -725,6 +748,8 @@ hashtableType hashHashtableType = {
     .entryGetKey = hashHashtableTypeGetKey,
     .keyCompare = dictSdsKeyCompare,
     .entryDestructor = hashHashtableTypeDestructor,
+    .entryGetUserDataBytes = hashEntryGetDataBytes,
+    .entryGetOverheadDataBytes = hashEntryGetOverheadDataBytes,
     .getMetadataSize = hashHashtableTypeMetadataSize,
 };
 
@@ -733,6 +758,8 @@ hashtableType hashWithVolatileItemsHashtableType = {
     .entryGetKey = hashHashtableTypeGetKey,
     .keyCompare = dictSdsKeyCompare,
     .entryDestructor = hashHashtableTypeDestructor,
+    .entryGetUserDataBytes = hashEntryGetDataBytes,
+    .entryGetOverheadDataBytes = hashEntryGetOverheadDataBytes,
     .getMetadataSize = hashHashtableTypeMetadataSize,
     .validateEntry = hashHashtableTypeValidate,
 };
